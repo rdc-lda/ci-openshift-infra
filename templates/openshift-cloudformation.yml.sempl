@@ -1,0 +1,543 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: "Creates AWS resources for OpenShift development environment"
+Metadata: {}
+
+Parameters:
+###########
+
+  ## Access and regional params
+  KeyName:
+    Description: The EC2 Key Pair to allow SSH access to the instance
+    Type: 'AWS::EC2::KeyPair::KeyName'
+  AvailabilityZone:
+    Description: Availability zone to deploy
+    Type: AWS::EC2::AvailabilityZone::Name
+  VpcCidrBlock:
+    Description: The CIDR block used for the subnet where Openshift will be deployed
+    Type: String
+    Default: '10.0.0.0/24'
+
+  ## Openshift cluster params
+  ClusterName:
+    Description: The Openshift Origin cluster name
+    Type: String
+  OpenshiftLoadbalancerInstanceType:
+    Description: The instance type of the loadbalancer node
+    Type: String
+    Default: 't2.small'  
+  OpenshiftMasterInstanceType:
+    Description: The instance type of the master node
+    Type: String
+    Default: 't2.medium'
+  OpenshiftMasterDataVolumeSize:
+    Description: The master data volume size in Gb
+    Type: String
+    Default: '50'
+  OpenshiftMasterLogVolumeSize:
+    Description: The master log volume size in Gb
+    Type: String
+    Default: '10'
+  OpenshiftMasterNFSVolumeSize:
+    Description: The master NFS volume size in Gb
+    Type: String
+    Default: '10'
+  OpenshiftInfraInstanceType:
+    Description: The instance type of the infra node
+    Type: String
+    Default: 't2.medium'
+  OpenshiftInfraDataVolumeSize:
+    Description: The infra data volume size in Gb
+    Type: String
+    Default: '50'
+  OpenshiftInfraLogVolumeSize:
+    Description: The infra log volume size in Gb
+    Type: String
+    Default: '10'
+  OpenshiftWorkerInstanceType:
+    Description: The instance type of a worker node
+    Type: String
+    Default: 't2.medium'
+  OpenshiftWorkerDataVolumeSize:
+    Description: The worker data volume size in Gb
+    Type: String
+    Default: '50'
+  OpenshiftWorkerLogVolumeSize:
+    Description: The worker log volume size in Gb
+    Type: String
+    Default: '10'
+
+Mappings:
+#########
+  RegionMap:
+    us-east-1:
+      #CentOS7: "ami-ae7bfdb8"
+      CentOS7: "ami-02eac2c0129f6376b"
+    us-east-2:
+      CentOS7: "ami-9cbf9bf9"
+    ap-south-1:
+      #CentOS7: "ami-1780a878"
+      CentOS7: "ami-02e60be79e78fef21"
+    ap-southeast-2:
+      CentOS7: "ami-d8c21dba"
+    eu-west-3:
+      CentOS7: "ami-262e9f5b"
+    eu-central-1:
+      CentOS7: "ami-dd3c0f36"
+    
+Resources:
+##########
+
+  #
+  ## Network resources
+  OpenshiftVPC:
+    Type: "AWS::EC2::VPC"
+    Properties:
+      CidrBlock: !Ref VpcCidrBlock
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ''
+            - - !Ref ClusterName
+              - '-openshift-vpc'
+        - Key: OpenshiftClusterName
+          Value: !Ref ClusterName
+        - Key: OpenshiftClusterType
+          Value: 'development'
+
+  InternetGateways:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ''
+            - - !Ref ClusterName
+              - '-openshift-internetgateway'
+        - Key: OpenshiftClusterName
+          Value: !Ref ClusterName
+        - Key: OpenshiftClusterType
+          Value: 'development'
+
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateways
+      VpcId: !Ref OpenshiftVPC
+
+  Subnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref OpenshiftVPC
+      CidrBlock: !Ref VpcCidrBlock
+      AvailabilityZone: !Ref AvailabilityZone
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ''
+            - - !Ref ClusterName
+              - '-openshift-subnet'
+        - Key: OpenshiftClusterName
+          Value: !Ref ClusterName
+        - Key: OpenshiftClusterType
+          Value: 'development'
+        - Key: OpenshiftClusterType
+          Value: 'development'
+
+  RouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref OpenshiftVPC
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ''
+            - - !Ref ClusterName
+              - '-openshift-routetable'
+        - Key: OpenshiftClusterName
+          Value: !Ref ClusterName
+        - Key: OpenshiftClusterType
+          Value: 'development'
+
+  SubnetRouteTableAsoc:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      RouteTableId: !Ref RouteTable
+      SubnetId: !Ref Subnet
+
+  Route:
+    Type: "AWS::EC2::Route"
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateways
+
+  #
+  ## Openshift resources
+
+  ## Master node
+  OpenshiftMaster:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      InstanceType: !Ref OpenshiftMasterInstanceType
+      KeyName: !Ref KeyName
+      AvailabilityZone: !Ref AvailabilityZone
+      BlockDeviceMappings:
+        - DeviceName: "/dev/sda1"
+          Ebs:
+            DeleteOnTermination: "true"
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: "true"
+          DeviceIndex: "0"
+          SubnetId: !Ref Subnet
+          GroupSet:
+             - !Ref MasterSecurityGroup
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", CentOS7]
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ''
+            - - !Ref ClusterName
+              - '-openshift-master'
+        - Key: OpenshiftClusterName
+          Value: !Ref ClusterName
+        - Key: OpenshiftClusterType
+          Value: 'development'
+
+  DataVolumeMaster:
+    Type: 'AWS::EC2::Volume'
+    Properties:
+      AvailabilityZone: !GetAtt OpenshiftMaster.AvailabilityZone
+      Size: !Ref OpenshiftMasterDataVolumeSize
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ''
+            - - !Ref ClusterName
+              - '-openshift-data-volume-master'          
+        - Key: OpenshiftClusterName
+          Value: !Ref ClusterName  
+        - Key: OpenshiftClusterType
+          Value: 'development'
+    DeletionPolicy: Delete
+
+  DataVolumeAtttachmentMaster:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      Device: '/dev/xvdb'
+      VolumeId: !Ref DataVolumeMaster
+      InstanceId: !Ref OpenshiftMaster
+
+  LogVolumeMaster:
+    Type: 'AWS::EC2::Volume'
+    Properties:
+      AvailabilityZone: !GetAtt OpenshiftMaster.AvailabilityZone
+      Size: !Ref OpenshiftMasterLogVolumeSize
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ''
+            - - !Ref ClusterName
+              - '-openshift-log-volume-master'          
+        - Key: OpenshiftClusterName
+          Value: !Ref ClusterName  
+        - Key: OpenshiftClusterType
+          Value: 'development'
+    DeletionPolicy: Delete
+
+  LogVolumeAtttachmentMaster:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      Device: '/dev/xvdf'
+      VolumeId: !Ref LogVolumeMaster
+      InstanceId: !Ref OpenshiftMaster
+
+  NFSVolumeMaster:
+    Type: 'AWS::EC2::Volume'
+    Properties:
+      AvailabilityZone: !GetAtt OpenshiftMaster.AvailabilityZone
+      Size: !Ref OpenshiftMasterNFSVolumeSize
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ''
+            - - !Ref ClusterName
+              - '-openshift-nfs-volume-master'
+        - Key: OpenshiftClusterName
+          Value: !Ref ClusterName
+        - Key: OpenshiftClusterType
+          Value: 'development'
+    DeletionPolicy: Delete
+
+  NFSVolumeAtttachmentMaster:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      Device: '/dev/xvdc'
+      VolumeId: !Ref NFSVolumeMaster
+      InstanceId: !Ref OpenshiftMaster
+
+  ## Infra node
+  OpenshiftInfra:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      InstanceType: !Ref OpenshiftInfraInstanceType
+      KeyName: !Ref KeyName
+      AvailabilityZone: !Ref AvailabilityZone
+      BlockDeviceMappings:
+        - DeviceName: "/dev/sda1"
+          Ebs:
+            DeleteOnTermination: "true"
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: "true"
+          DeviceIndex: "0"
+          SubnetId: !Ref Subnet
+          GroupSet:
+             - !Ref MasterSecurityGroup
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", CentOS7]
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ''
+            - - !Ref ClusterName
+              - '-openshift-infra'
+        - Key: OpenshiftClusterName
+          Value: !Ref ClusterName
+        - Key: OpenshiftClusterType
+          Value: 'development'
+
+  DataVolumeInfra:
+      Type: 'AWS::EC2::Volume'
+      Properties:
+        AvailabilityZone: !GetAtt OpenshiftInfra.AvailabilityZone
+        Size: !Ref OpenshiftInfraDataVolumeSize
+        Tags:
+          - Key: Name
+            Value: !Join
+              - ''
+              - - !Ref ClusterName
+                - '-openshift-data-volume-infra'          
+          - Key: OpenshiftClusterName
+            Value: !Ref ClusterName  
+          - Key: OpenshiftClusterType
+            Value: 'development'
+      DeletionPolicy: Delete
+
+  DataVolumeAtttachmentInfra:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      Device: '/dev/xvdb'
+      VolumeId: !Ref DataVolumeInfra
+      InstanceId: !Ref OpenshiftInfra
+
+  LogVolumeInfra:
+    Type: 'AWS::EC2::Volume'
+    Properties:
+      AvailabilityZone: !GetAtt OpenshiftInfra.AvailabilityZone
+      Size: !Ref OpenshiftInfraLogVolumeSize
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ''
+            - - !Ref ClusterName
+              - '-openshift-log-volume-infra'          
+        - Key: OpenshiftClusterName
+          Value: !Ref ClusterName  
+        - Key: OpenshiftClusterType
+          Value: 'development'
+    DeletionPolicy: Delete
+
+  LogVolumeAtttachmentInfra:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      Device: '/dev/xvdf'
+      VolumeId: !Ref LogVolumeInfra
+      InstanceId: !Ref OpenshiftInfra
+
+
+  ## Loadbalancer node
+  OpenshiftLoadbalancer:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      InstanceType: !Ref OpenshiftLoadbalancerInstanceType
+      KeyName: !Ref KeyName
+      AvailabilityZone: !Ref AvailabilityZone
+      BlockDeviceMappings:
+        - DeviceName: "/dev/sda1"
+          Ebs:
+            DeleteOnTermination: "true"
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: "true"
+          DeviceIndex: "0"
+          SubnetId: !Ref Subnet
+          GroupSet:
+             - !Ref MasterSecurityGroup
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", CentOS7]
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ''
+            - - !Ref ClusterName
+              - '-openshift-lb'
+        - Key: OpenshiftClusterName
+          Value: !Ref ClusterName
+        - Key: OpenshiftClusterType
+          Value: 'development'
+
+  ## Worker node(s)
+
+### begin
+# for WorkerNodeId in $(seq 1 ${worker_node_count:-1}); do
+  OpenshiftWorker${WorkerNodeId}:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      InstanceType: !Ref OpenshiftWorkerInstanceType
+      KeyName: !Ref KeyName
+      AvailabilityZone: !Ref AvailabilityZone
+      BlockDeviceMappings:
+        - DeviceName: "/dev/sda1"
+          Ebs:
+            DeleteOnTermination: "true"
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: "true"
+          DeviceIndex: "0"
+          SubnetId: !Ref Subnet
+          GroupSet:
+             - !Ref WorkerSecurityGroup
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", CentOS7]
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ''
+            - - !Ref ClusterName
+              - '-openshift-worker${WorkerNodeId}'
+        - Key: OpenshiftClusterName
+          Value: !Ref ClusterName
+        - Key: OpenshiftClusterType
+          Value: 'development'
+
+  DataVolumeWorker${WorkerNodeId}:
+    Type: 'AWS::EC2::Volume'
+    Properties:
+      AvailabilityZone: !GetAtt OpenshiftWorker${WorkerNodeId}.AvailabilityZone
+      Size: !Ref OpenshiftWorkerDataVolumeSize
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ''
+            - - !Ref ClusterName
+              - '-openshift-data-volume-worker${WorkerNodeId}'
+        - Key: OpenshiftClusterName
+          Value: !Ref ClusterName
+        - Key: OpenshiftClusterType
+          Value: 'development'
+    DeletionPolicy: Delete
+
+  DataVolumeAtttachmentWorker${WorkerNodeId}:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      Device: '/dev/xvdb'
+      VolumeId: !Ref DataVolumeWorker${WorkerNodeId}
+      InstanceId: !Ref OpenshiftWorker${WorkerNodeId}
+
+  LogVolumeWorker${WorkerNodeId}:
+    Type: 'AWS::EC2::Volume'
+    Properties:
+      AvailabilityZone: !GetAtt OpenshiftWorker${WorkerNodeId}.AvailabilityZone
+      Size: !Ref OpenshiftWorkerLogVolumeSize
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ''
+            - - !Ref ClusterName
+              - '-openshift-log-volume-worker${WorkerNodeId}'
+        - Key: OpenshiftClusterName
+          Value: !Ref ClusterName
+        - Key: OpenshiftClusterType
+          Value: 'development'
+    DeletionPolicy: Delete
+
+  LogVolumeAtttachmentWorker${WorkerNodeId}:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      Device: '/dev/xvdf'
+      VolumeId: !Ref LogVolumeWorker${WorkerNodeId}
+      InstanceId: !Ref OpenshiftWorker${WorkerNodeId}
+# done
+### end 
+
+
+  WorkerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref OpenshiftVPC
+      GroupDescription: Security group for the worker Kubernetes nodes
+      SecurityGroupIngress:
+      - IpProtocol: -1
+        FromPort: -1
+        ToPort: -1
+        CidrIp: !Ref VpcCidrBlock
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ''
+            - - !Ref ClusterName
+              - '-openshift-worker-securitygroup'
+        - Key: OpenshiftClusterName
+          Value: !Ref ClusterName
+        - Key: OpenshiftClusterType
+          Value: 'development'
+
+  MasterSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref OpenshiftVPC
+      GroupDescription: Security group for the master Kubernetes node
+      SecurityGroupIngress:
+      - IpProtocol: -1
+        FromPort: -1
+        ToPort: -1
+        CidrIp: !Ref VpcCidrBlock
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: '443'
+        ToPort: '443'
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: '8443'
+        ToPort: '8443'
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: '10250'
+        ToPort: '10250'
+        CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ''
+            - - !Ref ClusterName
+              - '-openshift-master-securitygroup'
+        - Key: OpenshiftClusterName
+          Value: !Ref ClusterName
+        - Key: OpenshiftClusterType
+          Value: 'development'
+
+Outputs:
+  VpcId:
+    Value: !Ref OpenshiftVPC
+  Subnet:
+    Value: !Ref Subnet
+  WorkerSecurityGroup:
+    Value: !Ref WorkerSecurityGroup
+ 
